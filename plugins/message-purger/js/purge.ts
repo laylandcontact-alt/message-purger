@@ -39,7 +39,7 @@ interface DiscordModule {
     del?: (request: { url: string }) => Promise<unknown>;
 }
 
-const DELETE_DELAY_MS = 900;
+const DELETE_DELAY_MS = 275;
 const FETCH_PAGE_SIZE = 100;
 let activeHandle: PurgeHandle | undefined;
 

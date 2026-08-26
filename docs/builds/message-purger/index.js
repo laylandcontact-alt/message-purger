@@ -5,6 +5,7 @@
     const { showToast } = ui.toasts;
     const { View, Text, TextInput, TouchableOpacity, ScrollView } = RN;
     let activeCancel;
+    const DELETE_DELAY_MS = 275;
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     const parseDate = value => {
@@ -88,7 +89,7 @@
                 }
                 progress.status = `Deleted ${progress.deleted}/${ids.length}`;
                 emit();
-                await sleep(900);
+                await sleep(DELETE_DELAY_MS);
             }
             progress.cancelled = cancelled;
             progress.status = cancelled ? `Cancelled. Deleted ${progress.deleted} before stopping.` : `Done. Deleted ${progress.deleted}, failed ${progress.failed}.`;
