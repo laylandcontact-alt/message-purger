@@ -47,9 +47,12 @@ console.log(`SHA-256: ${createHash("sha256").update(zip).digest("hex")}`);
 
 const legacyDir = `${root}/compat/message-purger`;
 const legacyOutputDir = `${root}/docs/builds/message-purger`;
+const directOutputDir = `${root}/docs/message-purger`;
 await mkdir(legacyOutputDir, { recursive: true });
+await mkdir(directOutputDir, { recursive: true });
 await copyFile(`${root}/compat/repo.json`, `${root}/docs/repo.json`);
 await copyFile(`${legacyDir}/index.js`, `${legacyOutputDir}/index.js`);
+await copyFile(`${legacyDir}/index.js`, `${directOutputDir}/index.js`);
 const legacyScript = await readFile(`${legacyDir}/index.js`, "utf8");
 const legacyManifest = JSON.parse(
     await readFile(`${legacyDir}/manifest.json`, "utf8"),
@@ -59,4 +62,9 @@ await writeFile(
     `${legacyOutputDir}/manifest.json`,
     `${JSON.stringify(legacyManifest, null, 2)}\n`,
 );
-console.log("Generated legacy installer compatibility files in docs/builds/message-purger");
+await writeFile(
+    `${directOutputDir}/manifest.json`,
+    `${JSON.stringify(legacyManifest, null, 2)}\n`,
+);
+console.log("Generated direct installer files in docs/message-purger");
+console.log("Generated repository compatibility files in docs/builds/message-purger");
