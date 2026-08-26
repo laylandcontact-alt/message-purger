@@ -1,11 +1,9 @@
-vendetta => {
-    const { React, ReactNative: RN } = vendetta.metro.common;
-    const { findByProps, findByStoreName } = vendetta.metro;
-    const { showConfirmationAlert } = vendetta.ui.alerts;
-    const { showToast } = vendetta.ui.toasts;
+ (function(exports, plugin, metro, common, patcher, assets, toasts, utils, _vendetta, ui, storage) {
+    const { React, ReactNative: RN } = common;
+    const { findByProps, findByStoreName } = metro;
+    const { showConfirmationAlert } = ui.alerts;
+    const { showToast } = ui.toasts;
     const { View, Text, TextInput, TouchableOpacity, ScrollView } = RN;
-    const UserStore = findByStoreName("UserStore");
-    const RestAPI = findByProps("getAPIBaseURL", "get", "del");
     let activeCancel;
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -16,6 +14,8 @@ vendetta => {
     };
 
     function startPurge(channelId, afterDate, beforeDate, onProgress) {
+        const UserStore = findByStoreName("UserStore");
+        const RestAPI = findByProps("getAPIBaseURL", "get", "del");
         let cancelled = false;
         const progress = { status: "Starting...", scanned: 0, found: 0, deleted: 0, failed: 0, done: false, cancelled: false };
         const emit = () => onProgress({ ...progress });
@@ -131,5 +131,17 @@ vendetta => {
             React.createElement(Text, { style: { marginTop: 16, opacity: 0.65 } }, "Deletion is permanent. Only messages authored by the currently logged-in account are eligible."));
     }
 
-    return { onLoad() {}, onUnload() { activeCancel?.(); }, settings: Settings };
-}
+    const index = {
+        onLoad() {
+            try { _vendetta.logger?.log?.("[Message Purger] loaded"); } catch {}
+        },
+        onUnload() {
+            activeCancel?.();
+            try { _vendetta.logger?.log?.("[Message Purger] unloaded"); } catch {}
+        },
+        settings: Settings,
+    };
+    exports.default = index;
+    Object.defineProperty(exports, "__esModule", { value: true });
+    return exports;
+})({}, vendetta.plugin, vendetta.metro, vendetta.metro.common, vendetta.patcher, vendetta.ui.assets, vendetta.ui.toasts, vendetta.utils, vendetta, vendetta.ui, vendetta.storage)

@@ -67,4 +67,6 @@ await writeFile(
     `${JSON.stringify(legacyManifest, null, 2)}\n`,
 );
 console.log("Generated direct installer files in docs/message-purger");
-console.log("Generated repository compatibility files in docs/builds/message-purger");
+console.log(
+    "Generated repository compatibility files in docs/builds/message-purger",
+);
