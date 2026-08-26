@@ -5,9 +5,26 @@
     const { showToast } = ui.toasts;
     const { View, Text, TextInput, TouchableOpacity, ScrollView } = RN;
     let activeCancel;
-    const DELETE_DELAY_MS = 275;
+    const INITIAL_DELETE_DELAY_MS = 800;
+    const MIN_DELETE_DELAY_MS = 450;
+    const MAX_DELETE_DELAY_MS = 8000;
+    const DELAY_STEP_MS = 50;
+    const SUCCESS_STREAK_FOR_SPEEDUP = 5;
+    const RATE_LIMIT_MARGIN_MS = 250;
 
     const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const sleepWhileActive = (ms, isCancelled) => new Promise(resolve => {
+        const startedAt = Date.now();
+        const timer = setInterval(() => {
+            if (isCancelled()) {
+                clearInterval(timer);
+                resolve(false);
+            } else if (Date.now() - startedAt >= ms) {
+                clearInterval(timer);
+                resolve(true);
+            }
+        }, Math.min(100, Math.max(1, ms)));
+    });
     const parseDate = value => {
         if (!value.trim()) return undefined;
         const date = new Date(`${value.trim()}T00:00:00`);
@@ -67,20 +84,27 @@
                 emit();
                 return;
             }
+            let deleteDelayMs = INITIAL_DELETE_DELAY_MS;
+            let successfulSinceRateLimit = 0;
             for (const id of ids) {
                 if (cancelled) break;
                 let retries = 3;
+                let deleted = false;
                 while (retries-- > 0) {
                     try {
                         await RestAPI.del({ url: `/channels/${channelId}/messages/${id}` });
                         progress.deleted++;
+                        successfulSinceRateLimit++;
+                        deleted = true;
                         break;
                     } catch (error) {
                         const retryAfter = error?.body?.retry_after ?? error?.retry_after;
                         if (retryAfter !== undefined) {
                             progress.status = `Rate limited, waiting ${retryAfter}s...`;
                             emit();
-                            await sleep(Number(retryAfter) * 1000 + 250);
+                            if (!await sleepWhileActive(Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS, () => cancelled)) break;
+                            deleteDelayMs = Math.min(MAX_DELETE_DELAY_MS, Math.max(deleteDelayMs * 2, Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS));
+                            successfulSinceRateLimit = 0;
                         } else {
                             progress.failed++;
                             break;
@@ -89,7 +113,12 @@
                 }
                 progress.status = `Deleted ${progress.deleted}/${ids.length}`;
                 emit();
-                await sleep(DELETE_DELAY_MS);
+                if (cancelled) break;
+                if (deleted && successfulSinceRateLimit >= SUCCESS_STREAK_FOR_SPEEDUP) {
+                    deleteDelayMs = Math.max(MIN_DELETE_DELAY_MS, deleteDelayMs - DELAY_STEP_MS);
+                    successfulSinceRateLimit = 0;
+                }
+                if (!await sleepWhileActive(deleteDelayMs, () => cancelled)) break;
             }
             progress.cancelled = cancelled;
             progress.status = cancelled ? `Cancelled. Deleted ${progress.deleted} before stopping.` : `Done. Deleted ${progress.deleted}, failed ${progress.failed}.`;

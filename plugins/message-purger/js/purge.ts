@@ -39,12 +39,38 @@ interface DiscordModule {
     del?: (request: { url: string }) => Promise<unknown>;
 }
 
-const DELETE_DELAY_MS = 275;
+const INITIAL_DELETE_DELAY_MS = 800;
+const MIN_DELETE_DELAY_MS = 450;
+const MAX_DELETE_DELAY_MS = 8_000;
+const DELAY_STEP_MS = 50;
+const SUCCESS_STREAK_FOR_SPEEDUP = 5;
+const RATE_LIMIT_MARGIN_MS = 250;
 const FETCH_PAGE_SIZE = 100;
 let activeHandle: PurgeHandle | undefined;
 
 function sleep(ms: number) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sleepWhileActive(
+    ms: number,
+    isCancelled: () => boolean,
+): Promise<boolean> {
+    return new Promise((resolve) => {
+        const startedAt = Date.now();
+        const timer = setInterval(
+            () => {
+                if (isCancelled()) {
+                    clearInterval(timer);
+                    resolve(false);
+                } else if (Date.now() - startedAt >= ms) {
+                    clearInterval(timer);
+                    resolve(true);
+                }
+            },
+            Math.min(100, Math.max(1, ms)),
+        );
+    });
 }
 
 function findModule<T extends DiscordModule>(
@@ -158,16 +184,21 @@ export function startPurge(options: PurgeOptions): PurgeHandle {
 
         progress.status = `Deleting ${toDelete.length} message(s)...`;
         emit();
+        let deleteDelayMs = INITIAL_DELETE_DELAY_MS;
+        let successfulSinceRateLimit = 0;
         for (const id of toDelete) {
             if (cancelled) break;
 
             let retriesLeft = 3;
+            let deleted = false;
             while (retriesLeft > 0) {
                 try {
                     await restApi.del({
                         url: `/channels/${channelId}/messages/${id}`,
                     });
                     progress.deleted++;
+                    successfulSinceRateLimit++;
+                    deleted = true;
                     break;
                 } catch (error: any) {
                     const retryAfter =
@@ -175,7 +206,20 @@ export function startPurge(options: PurgeOptions): PurgeHandle {
                     if (retryAfter !== undefined) {
                         progress.status = `Rate limited, waiting ${retryAfter}s...`;
                         emit();
-                        await sleep(Number(retryAfter) * 1000 + 250);
+                        const retryWait = await sleepWhileActive(
+                            Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS,
+                            () => cancelled,
+                        );
+                        if (!retryWait) break;
+                        deleteDelayMs = Math.min(
+                            MAX_DELETE_DELAY_MS,
+                            Math.max(
+                                deleteDelayMs * 2,
+                                Number(retryAfter) * 1000 +
+                                    RATE_LIMIT_MARGIN_MS,
+                            ),
+                        );
+                        successfulSinceRateLimit = 0;
                         retriesLeft--;
                         continue;
                     }
@@ -191,7 +235,19 @@ export function startPurge(options: PurgeOptions): PurgeHandle {
 
             progress.status = `Deleted ${progress.deleted}/${toDelete.length}`;
             emit();
-            await sleep(DELETE_DELAY_MS);
+            if (cancelled) break;
+            if (
+                deleted &&
+                successfulSinceRateLimit >= SUCCESS_STREAK_FOR_SPEEDUP
+            ) {
+                deleteDelayMs = Math.max(
+                    MIN_DELETE_DELAY_MS,
+                    deleteDelayMs - DELAY_STEP_MS,
+                );
+                successfulSinceRateLimit = 0;
+            }
+            if (!(await sleepWhileActive(deleteDelayMs, () => cancelled)))
+                break;
         }
 
         progress.cancelled = cancelled;
