@@ -1,25 +1,37 @@
 {
-  "name": "message-purger",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/laylandcontact-alt/message-purger.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/laylandcontact-alt/message-purger/issues"
-  },
-  "homepage": "https://github.com/laylandcontact-alt/message-purger#readme",
-  "dependencies": {
-    "@swc/core": "^1.16.1",
-    "esbuild": "^0.28.2"
-  }
+    "name": "@laylandcontact-alt/message-purger",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "tsx node_modules/@revenge-mod/plugin-cli/src/main.ts build",
+        "build:dev": "tsx node_modules/@revenge-mod/plugin-cli/src/main.ts build --dev",
+        "package": "npm run build && node scripts/package.mjs",
+        "generate-index": "tsx node_modules/@revenge-mod/plugin-cli/src/main.ts generate-index --dist build/dist --base-url ${PLUGIN_REPOSITORY_URL:-https://laylandcontact-alt.github.io/message-purger} --out docs/index.json",
+        "lint:types": "tsc --noEmit",
+        "lint": "biome check"
+    },
+    "dependencies": {
+        "@revenge-mod/plugin-cli": "git+https://github.com/revenge-mod/revenge-plugin-cli.git",
+        "@revenge-mod/types": "git+https://github.com/revenge-mod/revenge-types.git"
+    },
+    "devDependencies": {
+        "@biomejs/biome": "^2.5.6",
+        "@types/node": "^26.1.2",
+        "@types/react": "^19.2.17",
+        "react-native": "0.81.6",
+        "tsx": "^4.19.4",
+        "typescript": "^7.0.2"
+    },
+    "overrides": {
+        "@react-native/community-cli-plugin": "npm:dry-uninstall",
+        "@react-native/codegen": "npm:dry-uninstall",
+        "babel-jest": "npm:dry-uninstall",
+        "babel-plugin-syntax-hermes-parser": "npm:dry-uninstall",
+        "hermes-compiler": "npm:dry-uninstall",
+        "jsc-android": "npm:dry-uninstall",
+        "react-devtools-core": "npm:dry-uninstall",
+        "recyclerlistview": "npm:dry-uninstall",
+        "react-native-gesture-handler": "npm:dry-uninstall",
+        "react-native-screens": "npm:dry-uninstall"
+    }
 }

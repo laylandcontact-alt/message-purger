@@ -1,0 +1,19 @@
+{
+    "format": 1,
+    "id": "message-purger",
+    "name": "Message Purger",
+    "description": "Bulk-delete messages you authored in a channel, with optional date filters.",
+    "author": "Layland",
+    "version": "1.0.0",
+    "dependencies": {
+        "revenge.api": {
+            "version": ">=1 <2"
+        },
+        "discord": {
+            "version": "*"
+        }
+    },
+    "dist": {
+        "script": "index.js"
+    }
+}

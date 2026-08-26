@@ -1,0 +1,30 @@
+{
+  "format": 1,
+  "name": "Message Purger Plugins",
+  "description": "Revenge plugins by Layland.",
+  "plugins": {
+    "message-purger": {
+      "name": "Message Purger",
+      "description": "Bulk-delete messages you authored in a channel, with optional date filters.",
+      "author": "Layland",
+      "channels": {
+        "latest": "1.0.0"
+      },
+      "versions": {
+        "1.0.0": {
+          "url": "https://laylandcontact-alt.github.io/message-purger/message-purger.zip",
+          "sha256": "b257fbcb89be19f8d9c6a2b268caf932994100241e181bd3188b5b8503b60335",
+          "size": 2703,
+          "dependencies": {
+            "revenge.api": {
+              "version": ">=1 <2"
+            },
+            "discord": {
+              "version": "*"
+            }
+          }
+        }
+      }
+    }
+  }
+}
