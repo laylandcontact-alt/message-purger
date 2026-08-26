@@ -13,8 +13,8 @@
       "versions": {
         "1.0.0": {
           "url": "https://laylandcontact-alt.github.io/message-purger/message-purger.zip",
-          "sha256": "cac9b85a8dd75730229aa60467a742cc6287a3f7c28e377d93949d2ba5b47075",
-          "size": 2885,
+          "sha256": "897583d771e714feb6b778329a6c5923ee5980070d771e89b4cd9b1f99196364",
+          "size": 2964,
           "dependencies": {
             "revenge.api": {
               "version": ">=1 <2"

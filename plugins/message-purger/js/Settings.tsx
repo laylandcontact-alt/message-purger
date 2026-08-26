@@ -1,7 +1,12 @@
 import React from "react";
 import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 
-import { startPurge } from "./purge";
+import {
+    cancelActivePurge,
+    getPurgeState,
+    startPurge,
+    subscribePurge,
+} from "./purge";
 
 interface SettingsProps {
     api: any;
@@ -69,9 +74,14 @@ export default function Settings({ api }: SettingsProps) {
     const [channelId, setChannelId] = React.useState("");
     const [afterInput, setAfterInput] = React.useState("");
     const [beforeInput, setBeforeInput] = React.useState("");
-    const [running, setRunning] = React.useState(false);
-    const [progress, setProgress] = React.useState<any>(null);
-    const handleRef = React.useRef<{ cancel: () => void } | null>(null);
+    const [progress, setProgress] = React.useState(() => getPurgeState());
+
+    React.useEffect(() => {
+        const unsubscribe = subscribePurge(() => setProgress(getPurgeState()));
+        return () => unsubscribe();
+    }, []);
+
+    const running = progress?.running ?? false;
 
     const reallyStart = () => {
         const afterDate = parseDate(afterInput);
@@ -85,17 +95,13 @@ export default function Settings({ api }: SettingsProps) {
             return;
         }
 
-        setRunning(true);
-        handleRef.current = startPurge({
+        const handle = startPurge({
             api,
             channelId: channelId.trim(),
             afterDate,
             beforeDate,
-            onProgress: (state) => {
-                setProgress(state);
-                if (state.done) setRunning(false);
-            },
         });
+        if (!handle) showToast(api, "A purge is already running.");
     };
 
     const onStartPress = () => {
@@ -172,9 +178,7 @@ export default function Settings({ api }: SettingsProps) {
                 }}
             />
             <Pressable
-                onPress={
-                    running ? () => handleRef.current?.cancel() : onStartPress
-                }
+                onPress={running ? cancelActivePurge : onStartPress}
                 style={{
                     backgroundColor: running ? "#4f545c" : "#da373c",
                     borderRadius: 6,

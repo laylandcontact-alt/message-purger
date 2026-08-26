@@ -1,4 +1,3 @@
-import { cancelActivePurge } from "./purge";
 import Settings from "./Settings";
 
 export default plugin({
@@ -7,7 +6,6 @@ export default plugin({
         console.info("[Message Purger] started");
     },
     stop() {
-        cancelActivePurge();
         console.info("[Message Purger] stopped");
     },
 });

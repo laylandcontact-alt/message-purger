@@ -1,22 +1,33 @@
- (function(exports, plugin, metro, common, patcher, assets, toasts, utils, _vendetta, ui, storage) {
+(function(exports, plugin, metro, common, patcher, assets, toasts, utils, _vendetta, ui, storage) {
     const { React, ReactNative: RN } = common;
-    const { findByProps, findByStoreName } = metro;
+    const { View, Text, TextInput, TouchableOpacity, ScrollView } = RN;
     const { showConfirmationAlert } = ui.alerts;
     const { showToast } = ui.toasts;
-    const { View, Text, TextInput, TouchableOpacity, ScrollView } = RN;
-    let activeCancel;
     const INITIAL_DELETE_DELAY_MS = 800;
     const MIN_DELETE_DELAY_MS = 450;
     const MAX_DELETE_DELAY_MS = 8000;
     const DELAY_STEP_MS = 50;
     const SUCCESS_STREAK_FOR_SPEEDUP = 5;
     const RATE_LIMIT_MARGIN_MS = 250;
+    const listeners = new Set();
+    let state;
+    let activeCancel;
 
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-    const sleepWhileActive = (ms, isCancelled) => new Promise(resolve => {
+    const notify = () => listeners.forEach(listener => listener());
+    const subscribe = listener => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+    };
+    const getState = () => state;
+    const update = patch => {
+        if (!state) return;
+        state = { ...state, ...patch };
+        notify();
+    };
+    const sleepWhileActive = (ms, cancelled) => new Promise(resolve => {
         const startedAt = Date.now();
         const timer = setInterval(() => {
-            if (isCancelled()) {
+            if (cancelled()) {
                 clearInterval(timer);
                 resolve(false);
             } else if (Date.now() - startedAt >= ms) {
@@ -31,121 +42,100 @@
         return Number.isNaN(date.getTime()) ? undefined : date;
     };
 
-    function startPurge(channelId, afterDate, beforeDate, onProgress) {
-        const UserStore = findByStoreName("UserStore");
-        const RestAPI = findByProps("getAPIBaseURL", "get", "del");
+    function startPurge(channelId, afterDate, beforeDate) {
+        if (state?.running) return undefined;
         let cancelled = false;
-        const progress = { status: "Starting...", scanned: 0, found: 0, deleted: 0, failed: 0, done: false, cancelled: false };
-        const emit = () => onProgress({ ...progress });
+        state = { running: true, status: "Starting...", scanned: 0, found: 0, deleted: 0, failed: 0, cancelled: false, done: false, channelId, startedAt: Date.now(), delayMs: INITIAL_DELETE_DELAY_MS };
         activeCancel = () => { cancelled = true; };
-
+        notify();
         (async () => {
+            const UserStore = metro.findByStoreName?.("UserStore");
+            const RestAPI = metro.findByProps?.("getAPIBaseURL", "get", "del");
             const selfId = UserStore?.getCurrentUser?.()?.id;
-            if (!selfId || !RestAPI?.get || !RestAPI?.del) {
-                progress.status = "Could not access Discord user or REST APIs.";
-                progress.done = true;
-                emit();
-                return;
-            }
+            if (!selfId) return update({ running: false, done: true, status: "Could not determine current user. Aborting." });
+            if (!RestAPI?.get || !RestAPI?.del) return update({ running: false, done: true, status: "Could not find Discord's REST module. Aborting." });
             const ids = [];
             let before;
-            progress.status = "Scanning message history...";
-            emit();
-            while (!cancelled) {
-                let page;
-                try {
+            update({ status: "Scanning message history..." });
+            try {
+                while (!cancelled) {
                     const response = await RestAPI.get({ url: `/channels/${channelId}/messages`, query: { limit: 100, ...(before ? { before } : {}) } });
-                    page = response?.body ?? [];
-                } catch (error) {
-                    progress.status = `Failed to fetch messages: ${String(error)}`;
-                    progress.done = true;
-                    emit();
-                    return;
+                    const page = response?.body ?? [];
+                    if (!Array.isArray(page) || !page.length) break;
+                    for (const message of page) {
+                        state.scanned++;
+                        if (message.author?.id !== selfId) continue;
+                        const date = new Date(message.timestamp);
+                        if (afterDate && date < afterDate) continue;
+                        if (beforeDate && date > beforeDate) continue;
+                        ids.push(message.id);
+                        state.found++;
+                    }
+                    notify();
+                    before = page[page.length - 1]?.id;
+                    if (page.length < 100 || !(await sleepWhileActive(300, () => cancelled))) break;
                 }
-                if (!Array.isArray(page) || !page.length) break;
-                for (const message of page) {
-                    progress.scanned++;
-                    if (message.author?.id !== selfId) continue;
-                    const date = new Date(message.timestamp);
-                    if (afterDate && date < afterDate) continue;
-                    if (beforeDate && date > beforeDate) continue;
-                    ids.push(message.id);
-                    progress.found++;
-                }
-                emit();
-                before = page[page.length - 1]?.id;
-                if (page.length < 100) break;
-                await sleep(300);
-            }
-            if (cancelled) {
-                progress.status = "Cancelled during scan.";
-                progress.cancelled = true;
-                progress.done = true;
-                emit();
-                return;
-            }
-            let deleteDelayMs = INITIAL_DELETE_DELAY_MS;
-            let successfulSinceRateLimit = 0;
-            for (const id of ids) {
-                if (cancelled) break;
-                let retries = 3;
-                let deleted = false;
-                while (retries-- > 0) {
-                    try {
-                        await RestAPI.del({ url: `/channels/${channelId}/messages/${id}` });
-                        progress.deleted++;
-                        successfulSinceRateLimit++;
-                        deleted = true;
-                        break;
-                    } catch (error) {
-                        const retryAfter = error?.body?.retry_after ?? error?.retry_after;
-                        if (retryAfter !== undefined) {
-                            progress.status = `Rate limited, waiting ${retryAfter}s...`;
-                            emit();
-                            if (!await sleepWhileActive(Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS, () => cancelled)) break;
-                            deleteDelayMs = Math.min(MAX_DELETE_DELAY_MS, Math.max(deleteDelayMs * 2, Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS));
-                            successfulSinceRateLimit = 0;
-                        } else {
-                            progress.failed++;
+                if (cancelled) return update({ running: false, done: true, cancelled: true, status: "Cancelled during scan." });
+                update({ status: `Deleting ${ids.length} message(s)...` });
+                let delayMs = INITIAL_DELETE_DELAY_MS;
+                let successfulSinceRateLimit = 0;
+                for (const id of ids) {
+                    if (cancelled) break;
+                    let retries = 3;
+                    let deleted = false;
+                    while (retries-- > 0) {
+                        try {
+                            await RestAPI.del({ url: `/channels/${channelId}/messages/${id}` });
+                            state.deleted++;
+                            successfulSinceRateLimit++;
+                            deleted = true;
                             break;
+                        } catch (error) {
+                            const retryAfter = error?.body?.retry_after ?? error?.retry_after;
+                            if (retryAfter === undefined) {
+                                state.failed++;
+                                break;
+                            }
+                            update({ status: `Rate limited, waiting ${retryAfter}s...` });
+                            if (!(await sleepWhileActive(Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS, () => cancelled))) break;
+                            delayMs = Math.min(MAX_DELETE_DELAY_MS, Math.max(delayMs * 2, Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS));
+                            successfulSinceRateLimit = 0;
+                            update({ delayMs });
                         }
                     }
+                    if (cancelled) break;
+                    if (deleted && successfulSinceRateLimit >= SUCCESS_STREAK_FOR_SPEEDUP) {
+                        delayMs = Math.max(MIN_DELETE_DELAY_MS, delayMs - DELAY_STEP_MS);
+                        successfulSinceRateLimit = 0;
+                        update({ delayMs });
+                    }
+                    update({ status: `Deleted ${state.deleted}/${ids.length}` });
+                    if (!(await sleepWhileActive(delayMs, () => cancelled))) break;
                 }
-                progress.status = `Deleted ${progress.deleted}/${ids.length}`;
-                emit();
-                if (cancelled) break;
-                if (deleted && successfulSinceRateLimit >= SUCCESS_STREAK_FOR_SPEEDUP) {
-                    deleteDelayMs = Math.max(MIN_DELETE_DELAY_MS, deleteDelayMs - DELAY_STEP_MS);
-                    successfulSinceRateLimit = 0;
-                }
-                if (!await sleepWhileActive(deleteDelayMs, () => cancelled)) break;
+                update({ running: false, done: true, cancelled, status: cancelled ? `Cancelled. Deleted ${state.deleted} before stopping.` : `Done. Deleted ${state.deleted}, failed ${state.failed}.` });
+            } catch (error) {
+                try { _vendetta.logger?.error?.("[Message Purger] purge failed", error); } catch {}
+                update({ running: false, done: true, status: `Purge failed: ${String(error)}` });
             }
-            progress.cancelled = cancelled;
-            progress.status = cancelled ? `Cancelled. Deleted ${progress.deleted} before stopping.` : `Done. Deleted ${progress.deleted}, failed ${progress.failed}.`;
-            progress.done = true;
-            emit();
-        })();
-        return () => { cancelled = true; };
+        })().finally(() => { activeCancel = undefined; });
+        return { cancel: () => { cancelled = true; } };
     }
 
     function Settings() {
         const [channelId, setChannelId] = React.useState("");
         const [after, setAfter] = React.useState("");
         const [before, setBefore] = React.useState("");
-        const [running, setRunning] = React.useState(false);
-        const [progress, setProgress] = React.useState(null);
+        const [progress, setProgress] = React.useState(() => getState());
+        React.useEffect(() => {
+            const unsubscribe = subscribe(() => setProgress(getState()));
+            return () => unsubscribe();
+        }, []);
+        const running = progress?.running ?? false;
         const start = () => {
             const afterDate = parseDate(after);
             const beforeDate = parseDate(before);
-            if ((after && !afterDate) || (before && !beforeDate)) {
-                showToast("Enter dates as YYYY-MM-DD.");
-                return;
-            }
-            setRunning(true);
-            startPurge(channelId.trim(), afterDate, beforeDate, state => {
-                setProgress(state);
-                if (state.done) setRunning(false);
-            });
+            if ((after && !afterDate) || (before && !beforeDate)) return showToast("Enter dates as YYYY-MM-DD.");
+            if (!startPurge(channelId.trim(), afterDate, beforeDate)) showToast("A purge is already running.");
         };
         const pressStart = () => {
             if (!channelId.trim()) return showToast("Enter a channel ID first.");
@@ -162,13 +152,8 @@
     }
 
     const index = {
-        onLoad() {
-            try { _vendetta.logger?.log?.("[Message Purger] loaded"); } catch {}
-        },
-        onUnload() {
-            activeCancel?.();
-            try { _vendetta.logger?.log?.("[Message Purger] unloaded"); } catch {}
-        },
+        onLoad() { try { _vendetta.logger?.log?.("[Message Purger] loaded"); } catch {} },
+        onUnload() { try { _vendetta.logger?.log?.("[Message Purger] unloaded"); } catch {} },
         settings: Settings,
     };
     exports.default = index;

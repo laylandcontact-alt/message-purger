@@ -5,18 +5,21 @@ export interface PurgeOptions {
     channelId: string;
     afterDate?: Date;
     beforeDate?: Date;
-    onProgress: (state: PurgeProgress) => void;
     api: any;
 }
 
 export interface PurgeProgress {
+    running: boolean;
     status: string;
     scanned: number;
     found: number;
     deleted: number;
     failed: number;
-    done: boolean;
     cancelled: boolean;
+    done: boolean;
+    channelId: string;
+    startedAt: number;
+    delayMs: number;
 }
 
 export interface PurgeHandle {
@@ -46,17 +49,34 @@ const DELAY_STEP_MS = 50;
 const SUCCESS_STREAK_FOR_SPEEDUP = 5;
 const RATE_LIMIT_MARGIN_MS = 250;
 const FETCH_PAGE_SIZE = 100;
-let activeHandle: PurgeHandle | undefined;
 
-function sleep(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+let activeHandle: PurgeHandle | undefined;
+let purgeState: PurgeProgress | undefined;
+const listeners = new Set<() => void>();
+
+function notify() {
+    for (const listener of listeners) listener();
 }
 
-function sleepWhileActive(
-    ms: number,
-    isCancelled: () => boolean,
-): Promise<boolean> {
-    return new Promise((resolve) => {
+export function subscribePurge(listener: () => void) {
+    listeners.add(listener);
+    return () => {
+        listeners.delete(listener);
+    };
+}
+
+export function getPurgeState() {
+    return purgeState;
+}
+
+function updatePurgeState(update: Partial<PurgeProgress>) {
+    if (!purgeState) return;
+    purgeState = { ...purgeState, ...update };
+    notify();
+}
+
+function sleepWhileActive(ms: number, isCancelled: () => boolean) {
+    return new Promise<boolean>((resolve) => {
         const startedAt = Date.now();
         const timer = setInterval(
             () => {
@@ -87,54 +107,64 @@ function getLogger(api: any) {
     return Logger ? new Logger("Message Purger") : console;
 }
 
-export function startPurge(options: PurgeOptions): PurgeHandle {
-    const { channelId, afterDate, beforeDate, onProgress, api } = options;
-    const userStore = findModule("getCurrentUser");
-    const restApi = findModule("getAPIBaseURL", "get", "del");
-    const logger = getLogger(api);
-    let cancelled = false;
+export function startPurge(options: PurgeOptions): PurgeHandle | undefined {
+    if (purgeState?.running) return undefined;
 
-    const progress: PurgeProgress = {
-        status: "Starting...",
-        scanned: 0,
-        found: 0,
-        deleted: 0,
-        failed: 0,
-        done: false,
-        cancelled: false,
-    };
-    const emit = () => onProgress({ ...progress });
+    const { channelId, afterDate, beforeDate, api } = options;
+    let cancelled = false;
     const handle: PurgeHandle = {
         cancel: () => {
             cancelled = true;
         },
     };
     activeHandle = handle;
+    purgeState = {
+        running: true,
+        status: "Starting...",
+        scanned: 0,
+        found: 0,
+        deleted: 0,
+        failed: 0,
+        cancelled: false,
+        done: false,
+        channelId,
+        startedAt: Date.now(),
+        delayMs: INITIAL_DELETE_DELAY_MS,
+    };
+    notify();
+
+    const emit = (update: Partial<PurgeProgress> = {}) =>
+        updatePurgeState(update);
 
     (async () => {
+        const logger = getLogger(api);
+        const userStore = findModule("getCurrentUser");
+        const restApi = findModule("getAPIBaseURL", "get", "del");
         const selfId = userStore?.getCurrentUser?.()?.id;
-        if (!selfId) {
-            progress.status = "Could not determine current user. Aborting.";
-            progress.done = true;
-            emit();
-            return;
-        }
 
-        if (!restApi?.get || !restApi?.del) {
-            progress.status = "Could not find Discord's REST module. Aborting.";
-            progress.done = true;
-            emit();
-            return;
-        }
+        try {
+            if (!selfId) {
+                emit({
+                    running: false,
+                    status: "Could not determine current user. Aborting.",
+                    done: true,
+                });
+                return;
+            }
+            if (!restApi?.get || !restApi?.del) {
+                emit({
+                    running: false,
+                    status: "Could not find Discord's REST module. Aborting.",
+                    done: true,
+                });
+                return;
+            }
 
-        const toDelete: string[] = [];
-        let beforeCursor: string | undefined;
-        progress.status = "Scanning message history...";
-        emit();
+            const toDelete: string[] = [];
+            let beforeCursor: string | undefined;
+            emit({ status: "Scanning message history..." });
 
-        while (!cancelled) {
-            let page: DiscordMessage[];
-            try {
+            while (!cancelled) {
                 const response = await restApi.get({
                     url: `/channels/${channelId}/messages`,
                     query: {
@@ -142,120 +172,119 @@ export function startPurge(options: PurgeOptions): PurgeHandle {
                         ...(beforeCursor ? { before: beforeCursor } : {}),
                     },
                 });
-                page = response?.body ?? [];
-            } catch (error) {
-                logger.error(
-                    "[Message Purger] failed to fetch messages",
-                    error,
-                );
-                progress.status = `Failed to fetch messages: ${String(error)}`;
-                progress.done = true;
-                emit();
+                const page: DiscordMessage[] = response?.body ?? [];
+                if (!Array.isArray(page) || page.length === 0) break;
+
+                for (const message of page) {
+                    purgeState!.scanned += 1;
+                    if (message.author?.id !== selfId) continue;
+                    const timestamp = new Date(message.timestamp);
+                    if (afterDate && timestamp < afterDate) continue;
+                    if (beforeDate && timestamp > beforeDate) continue;
+                    toDelete.push(message.id);
+                    purgeState!.found += 1;
+                }
+                notify();
+                beforeCursor = page[page.length - 1]?.id;
+                if (page.length < FETCH_PAGE_SIZE) break;
+                if (!(await sleepWhileActive(300, () => cancelled))) break;
+            }
+
+            if (cancelled) {
+                emit({ status: "Cancelled during scan.", cancelled: true });
                 return;
             }
 
-            if (!Array.isArray(page) || page.length === 0) break;
+            emit({ status: `Deleting ${toDelete.length} message(s)...` });
+            let deleteDelayMs = INITIAL_DELETE_DELAY_MS;
+            let successfulSinceRateLimit = 0;
+            for (const id of toDelete) {
+                if (cancelled) break;
 
-            for (const message of page) {
-                progress.scanned++;
-                if (message.author?.id !== selfId) continue;
-
-                const timestamp = new Date(message.timestamp);
-                if (afterDate && timestamp < afterDate) continue;
-                if (beforeDate && timestamp > beforeDate) continue;
-
-                toDelete.push(message.id);
-                progress.found++;
-            }
-            emit();
-
-            beforeCursor = page[page.length - 1]?.id;
-            if (page.length < FETCH_PAGE_SIZE) break;
-            await sleep(300);
-        }
-
-        if (cancelled) {
-            progress.status = "Cancelled during scan.";
-            progress.cancelled = true;
-            progress.done = true;
-            emit();
-            return;
-        }
-
-        progress.status = `Deleting ${toDelete.length} message(s)...`;
-        emit();
-        let deleteDelayMs = INITIAL_DELETE_DELAY_MS;
-        let successfulSinceRateLimit = 0;
-        for (const id of toDelete) {
-            if (cancelled) break;
-
-            let retriesLeft = 3;
-            let deleted = false;
-            while (retriesLeft > 0) {
-                try {
-                    await restApi.del({
-                        url: `/channels/${channelId}/messages/${id}`,
-                    });
-                    progress.deleted++;
-                    successfulSinceRateLimit++;
-                    deleted = true;
-                    break;
-                } catch (error: any) {
-                    const retryAfter =
-                        error?.body?.retry_after ?? error?.retry_after;
-                    if (retryAfter !== undefined) {
-                        progress.status = `Rate limited, waiting ${retryAfter}s...`;
-                        emit();
-                        const retryWait = await sleepWhileActive(
-                            Number(retryAfter) * 1000 + RATE_LIMIT_MARGIN_MS,
-                            () => cancelled,
+                let retriesLeft = 3;
+                let deleted = false;
+                while (retriesLeft > 0) {
+                    try {
+                        await restApi.del({
+                            url: `/channels/${channelId}/messages/${id}`,
+                        });
+                        purgeState!.deleted += 1;
+                        successfulSinceRateLimit += 1;
+                        deleted = true;
+                        break;
+                    } catch (error: any) {
+                        const retryAfter =
+                            error?.body?.retry_after ?? error?.retry_after;
+                        if (retryAfter !== undefined) {
+                            emit({
+                                status: `Rate limited, waiting ${retryAfter}s...`,
+                            });
+                            if (
+                                !(await sleepWhileActive(
+                                    Number(retryAfter) * 1000 +
+                                        RATE_LIMIT_MARGIN_MS,
+                                    () => cancelled,
+                                ))
+                            )
+                                break;
+                            deleteDelayMs = Math.min(
+                                MAX_DELETE_DELAY_MS,
+                                Math.max(
+                                    deleteDelayMs * 2,
+                                    Number(retryAfter) * 1000 +
+                                        RATE_LIMIT_MARGIN_MS,
+                                ),
+                            );
+                            successfulSinceRateLimit = 0;
+                            emit({ delayMs: deleteDelayMs });
+                            retriesLeft -= 1;
+                            continue;
+                        }
+                        logger.error(
+                            "[Message Purger] failed to delete",
+                            id,
+                            error,
                         );
-                        if (!retryWait) break;
-                        deleteDelayMs = Math.min(
-                            MAX_DELETE_DELAY_MS,
-                            Math.max(
-                                deleteDelayMs * 2,
-                                Number(retryAfter) * 1000 +
-                                    RATE_LIMIT_MARGIN_MS,
-                            ),
-                        );
-                        successfulSinceRateLimit = 0;
-                        retriesLeft--;
-                        continue;
+                        purgeState!.failed += 1;
+                        break;
                     }
-                    logger.error(
-                        "[Message Purger] failed to delete",
-                        id,
-                        error,
-                    );
-                    progress.failed++;
-                    break;
                 }
+
+                if (cancelled) break;
+                if (
+                    deleted &&
+                    successfulSinceRateLimit >= SUCCESS_STREAK_FOR_SPEEDUP
+                ) {
+                    deleteDelayMs = Math.max(
+                        MIN_DELETE_DELAY_MS,
+                        deleteDelayMs - DELAY_STEP_MS,
+                    );
+                    successfulSinceRateLimit = 0;
+                    emit({ delayMs: deleteDelayMs });
+                }
+                emit({
+                    status: `Deleted ${purgeState!.deleted}/${toDelete.length}`,
+                });
+                if (!(await sleepWhileActive(deleteDelayMs, () => cancelled)))
+                    break;
             }
 
-            progress.status = `Deleted ${progress.deleted}/${toDelete.length}`;
-            emit();
-            if (cancelled) break;
-            if (
-                deleted &&
-                successfulSinceRateLimit >= SUCCESS_STREAK_FOR_SPEEDUP
-            ) {
-                deleteDelayMs = Math.max(
-                    MIN_DELETE_DELAY_MS,
-                    deleteDelayMs - DELAY_STEP_MS,
-                );
-                successfulSinceRateLimit = 0;
-            }
-            if (!(await sleepWhileActive(deleteDelayMs, () => cancelled)))
-                break;
+            emit({
+                running: false,
+                cancelled,
+                status: cancelled
+                    ? `Cancelled. Deleted ${purgeState!.deleted} before stopping.`
+                    : `Done. Deleted ${purgeState!.deleted}, failed ${purgeState!.failed}.`,
+                done: true,
+            });
+        } catch (error) {
+            logger.error("[Message Purger] purge failed", error);
+            emit({
+                running: false,
+                status: `Purge failed: ${String(error)}`,
+                done: true,
+            });
         }
-
-        progress.cancelled = cancelled;
-        progress.status = cancelled
-            ? `Cancelled. Deleted ${progress.deleted} before stopping.`
-            : `Done. Deleted ${progress.deleted}, failed ${progress.failed}.`;
-        progress.done = true;
-        emit();
     })().finally(() => {
         if (activeHandle === handle) activeHandle = undefined;
     });
