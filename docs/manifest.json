@@ -1,0 +1,1 @@
+{"name":"Message Purger","description":"Bulk-delete messages you authored in a channel, with optional date filters. Never touches other users' messages.","authors":[{"name":"You","id":"0"}],"main":"index.js","vendetta":{"icon":"TrashIcon"},"hash":"cc2ae3352041618415b66bd0c2d2a3ea33a0772c2c251337e69031b232b160fe"}

@@ -1,0 +1,25 @@
+{
+  "name": "message-purger",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/laylandcontact-alt/message-purger.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/laylandcontact-alt/message-purger/issues"
+  },
+  "homepage": "https://github.com/laylandcontact-alt/message-purger#readme",
+  "dependencies": {
+    "@swc/core": "^1.16.1",
+    "esbuild": "^0.28.2"
+  }
+}
