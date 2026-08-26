@@ -9,6 +9,7 @@ const zipPath = `${distDir}/message-purger.zip`;
 
 await mkdir(distDir, { recursive: true });
 await rm(zipPath, { force: true });
+await rm(`${root}/docs/message-purger.zip`, { force: true });
 execFileSync(
     "zip",
     [
@@ -40,6 +41,7 @@ execFileSync(
 );
 
 const zip = await readFile(zipPath);
+await copyFile(zipPath, `${root}/docs/message-purger.zip`);
 console.log(`Packaged ${zipPath}`);
 console.log(`SHA-256: ${createHash("sha256").update(zip).digest("hex")}`);
 
