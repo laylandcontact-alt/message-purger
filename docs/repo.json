@@ -1,0 +1,9 @@
+{
+    "$meta": {
+        "name": "Message Purger Plugins",
+        "description": "Revenge-compatible Message Purger plugin repository."
+    },
+    "message-purger": {
+        "version": "1.0.0"
+    }
+}

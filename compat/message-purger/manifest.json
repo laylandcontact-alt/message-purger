@@ -1,0 +1,13 @@
+{
+    "id": "message-purger",
+    "spec": 3,
+    "version": "1.0.0",
+    "type": "plugin",
+    "display": {
+        "name": "Message Purger",
+        "description": "Bulk-delete messages you authored in a channel, with optional date filters.",
+        "authors": [{ "name": "Layland" }]
+    },
+    "main": "index.js",
+    "hash": "REPLACED_BY_BUILD"
+}
